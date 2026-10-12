@@ -68,7 +68,6 @@ function runCommand(command, args) {
 
 async function startEnvironment() {
   const node = process.execPath;
-  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 
   try {
     console.log("");
@@ -85,8 +84,8 @@ async function startEnvironment() {
 
     // 2. Apply pending migrations.
     console.log("\nChecking database migrations...");
-    await runCommand(npx, [
-      "sequelize-cli",
+    await runCommand(node, [
+      require.resolve("sequelize-cli/lib/sequelize"),
       "db:migrate"
     ]);
 
