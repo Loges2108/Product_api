@@ -14,6 +14,7 @@ pipeline {
     environment {
         API_REPO = 'https://github.com/Loges2108/Product_api.git'
         EMAIL_TO = 'logeswaran2108@gmail.com'
+        SHOULD_DEPLOY = 'false'
     }
 
     stages {
@@ -47,31 +48,28 @@ pipeline {
                     env.ENV_FILE =
                         "/var/www/product-api/.env.${env.DEPLOY_ENV.toLowerCase()}"
 
-                    echo "Deploy environment: ${env.DEPLOY_ENV}"
-                    echo "Git branch: ${env.GIT_BRANCH}"
+                    echo "Environment: ${env.DEPLOY_ENV}"
+                    echo "Target branch: ${env.GIT_BRANCH}"
                 }
             }
         }
 
         stage('Checkout') {
-    steps {
-        checkout scm
-        script {
-            env.GIT_BRANCH = env.DEPLOY_ENV
+            steps {
+                checkout scm
+            }
         }
-    }
-}
 
         stage('Identify Commit') {
             steps {
                 script {
-                    env.COMMIT_AUTHOR = sh(
-                        script: "git log -1 --pretty=format:'%an <%ae>'",
+                    env.COMMIT_SHA = sh(
+                        script: 'git rev-parse HEAD',
                         returnStdout: true
                     ).trim()
 
-                    env.COMMIT_SHA = sh(
-                        script: 'git rev-parse --short HEAD',
+                    env.COMMIT_AUTHOR = sh(
+                        script: "git log -1 --pretty=format:'%an <%ae>'",
                         returnStdout: true
                     ).trim()
 
@@ -98,7 +96,65 @@ pipeline {
             }
         }
 
+        stage('Validate Promotion') {
+            steps {
+                script {
+                    if (env.DEPLOY_ENV == 'DEV') {
+                        // Every new DEV commit is eligible for deployment.
+                        env.SHOULD_DEPLOY = 'true'
+                        echo "DEV commit detected: deployment is enabled."
+                    } else {
+                        def sourceBranch =
+                            env.DEPLOY_ENV == 'SIT' ? 'DEV' : 'SIT'
+
+                        def parentCount = sh(
+                            script: "git rev-list --parents -n 1 HEAD | awk '{print NF-1}'",
+                            returnStdout: true
+                        ).trim().toInteger()
+
+                        if (parentCount < 2) {
+                            env.SHOULD_DEPLOY = 'false'
+                            echo "SKIPPED: ${env.DEPLOY_ENV} commit is not a merge commit."
+                        } else {
+                            // Fetch the branch that is allowed to promote into this environment.
+                            sh """
+                                set -eu
+                                git fetch origin \
+                                  +refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}
+                            """
+
+                            def sourceParent = sh(
+                                script: 'git rev-parse HEAD^2',
+                                returnStdout: true
+                            ).trim()
+
+                            // The second parent must belong to the allowed source branch history.
+                            def sourceIsValid = sh(
+                                script: """
+                                    git merge-base --is-ancestor \
+                                      '${sourceParent}' \
+                                      'refs/remotes/origin/${sourceBranch}'
+                                """,
+                                returnStatus: true
+                            ) == 0
+
+                            if (sourceIsValid) {
+                                env.SHOULD_DEPLOY = 'true'
+                                echo "Valid promotion merge from ${sourceBranch} detected."
+                            } else {
+                                env.SHOULD_DEPLOY = 'false'
+                                echo "SKIPPED: Merge source is not in the ${sourceBranch} branch history."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Deploy API and Migrate Database') {
+            when {
+                expression { env.SHOULD_DEPLOY == 'true' }
+            }
             steps {
                 sh '''
                     set -eu
@@ -113,6 +169,9 @@ pipeline {
         }
 
         stage('Health Check') {
+            when {
+                expression { env.SHOULD_DEPLOY == 'true' }
+            }
             steps {
                 sh '''
                     set -eu
@@ -140,8 +199,17 @@ pipeline {
                         "http://127.0.0.1:${PORT}/api/products" \
                         >/dev/null
 
-                    echo "API health and products endpoint passed"
+                    echo "API health checks passed."
                 '''
+            }
+        }
+
+        stage('Deployment Skipped') {
+            when {
+                expression { env.SHOULD_DEPLOY != 'true' }
+            }
+            steps {
+                echo "No deployment performed. The commit did not meet the promotion rule."
             }
         }
     }
@@ -149,11 +217,15 @@ pipeline {
     post {
         success {
             script {
+                def outcome = env.SHOULD_DEPLOY == 'true'
+                    ? 'Deployment succeeded'
+                    : 'Build completed; deployment skipped'
+
                 try {
                     emailext(
                         to: "${env.EMAIL_TO}",
-                        subject: "${env.JOB_NAME} succeeded (${env.DEPLOY_ENV})",
-                        body: """API deployment succeeded.
+                        subject: "${env.JOB_NAME}: ${outcome}",
+                        body: """${outcome}
 
 Job: ${env.JOB_NAME}
 Environment: ${env.DEPLOY_ENV}
@@ -164,7 +236,7 @@ Build: ${env.BUILD_URL}
 """
                     )
                 } catch (Exception err) {
-                    echo "Email notification skipped: ${err.getMessage()}"
+                    echo "Email notification failed: ${err.getMessage()}"
                 }
             }
         }
@@ -174,19 +246,19 @@ Build: ${env.BUILD_URL}
                 try {
                     emailext(
                         to: "${env.EMAIL_TO}",
-                        subject: "${env.JOB_NAME} failed",
-                        body: """API deployment failed.
+                        subject: "${env.JOB_NAME}: Deployment failed",
+                        body: """API pipeline failed.
 
 Job: ${env.JOB_NAME}
-Environment: ${env.DEPLOY_ENV ?: 'undetermined'}
-Branch: ${env.GIT_BRANCH ?: 'undetermined'}
+Environment: ${env.DEPLOY_ENV ?: 'unknown'}
+Branch: ${env.GIT_BRANCH ?: 'unknown'}
 Build: ${env.BUILD_URL}
 
-Check Jenkins Console Output for the error.
+Check Jenkins Console Output for the first error.
 """
                     )
                 } catch (Exception err) {
-                    echo "Email notification skipped: ${err.getMessage()}"
+                    echo "Email notification failed: ${err.getMessage()}"
                 }
             }
         }
