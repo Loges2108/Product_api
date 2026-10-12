@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -37,32 +38,46 @@ pipeline {
                         env.DEPLOY_ENV = 'UAT'
                         env.GIT_BRANCH = 'UAT'
                     } else {
-                        error("Unsupported API job: ${env.JOB_NAME}")
+                        error(
+                            "Unsupported API job: ${env.JOB_NAME}. " +
+                            "Use Product_API_DEV, Product_API_SIT, or Product_API_UAT."
+                        )
                     }
 
-                    env.ENV_FILE = "/var/www/product-api/.env.${env.DEPLOY_ENV.toLowerCase()}"
-                    env.APP_DIR = "/var/www/product-api/${env.DEPLOY_ENV.toLowerCase()}"
-                    env.PM2_NAME = "product-api-${env.DEPLOY_ENV.toLowerCase()}"
+                    env.ENV_FILE =
+                        "/var/www/product-api/.env.${env.DEPLOY_ENV.toLowerCase()}"
 
                     echo "Deploy environment: ${env.DEPLOY_ENV}"
                     echo "Git branch: ${env.GIT_BRANCH}"
-                    echo "Env file: ${env.ENV_FILE}"
                 }
             }
         }
 
         stage('Checkout') {
             steps {
-                git branch: "${env.GIT_BRANCH}", url: "${env.API_REPO}", poll: true, changelog: true
+                git branch: "${env.GIT_BRANCH}",
+                    url: "${env.API_REPO}",
+                    poll: true,
+                    changelog: true
             }
         }
 
-        stage('Identify Commit Author') {
+        stage('Identify Commit') {
             steps {
-                sh '''
-                    set +e
-                    git log -1 --pretty=format:'%an <%ae>' || true
-                '''
+                script {
+                    env.COMMIT_AUTHOR = sh(
+                        script: "git log -1 --pretty=format:'%an <%ae>'",
+                        returnStdout: true
+                    ).trim()
+
+                    env.COMMIT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Commit: ${env.COMMIT_SHA}"
+                    echo "Author: ${env.COMMIT_AUTHOR}"
+                }
             }
         }
 
@@ -70,34 +85,29 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
                     test -f package.json
                     test -f package-lock.json
                     test -f src/server.js
                     test -f scripts/create-database.js
                     test -f .sequelizerc
+                    test -f ecosystem.config.js
+
                     echo "API source validation passed"
                 '''
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Deploy API and Migrate Database') {
             steps {
                 sh '''
                     set -eu
-                    npm ci --no-audit --no-fund
-                '''
-            }
-        }
 
-        stage('Deploy API') {
-            steps {
-                sh '''
-                    set -eu
-                    test -n "${ENV_FILE}"
                     test -f "${ENV_FILE}"
 
-                    chmod +x ./deploy-product-api 2>/dev/null || true
-                    ./deploy-product-api "${DEPLOY_ENV}" "${WORKSPACE}"
+                    sudo -n /usr/local/sbin/deploy-product-api \
+                        "${DEPLOY_ENV}" \
+                        "${WORKSPACE}"
                 '''
             }
         }
@@ -108,28 +118,29 @@ pipeline {
                     set -eu
 
                     case "${DEPLOY_ENV}" in
-                      DEV) PORT=5001 ;;
-                      SIT) PORT=5002 ;;
-                      UAT) PORT=5003 ;;
-                      *) echo "Invalid environment: ${DEPLOY_ENV}" >&2; exit 1 ;;
+                        DEV) PORT=5001 ;;
+                        SIT) PORT=5002 ;;
+                        UAT) PORT=5003 ;;
+                        *)
+                            echo "Invalid environment: ${DEPLOY_ENV}" >&2
+                            exit 1
+                            ;;
                     esac
 
-                    curl --fail --silent --show-error \
-                      --retry 20 --retry-delay 3 \
-                      "http://127.0.0.1:${PORT}/health"
+                    echo "Checking API health on port ${PORT}"
 
                     curl --fail --silent --show-error \
-                      --retry 20 --retry-delay 3 \
-                      "http://127.0.0.1:${PORT}/api/products"
-                '''
-            }
-        }
+                        --retry 20 --retry-delay 3 \
+                        --retry-connrefused \
+                        "http://127.0.0.1:${PORT}/health"
 
-        stage('Cleanup') {
-            steps {
-                sh '''
-                    set +e
-                    rm -rf .cache tmp build 2>/dev/null || true
+                    echo ""
+
+                    curl --fail --silent --show-error \
+                        "http://127.0.0.1:${PORT}/api/products" \
+                        >/dev/null
+
+                    echo "API health and products endpoint passed"
                 '''
             }
         }
@@ -141,21 +152,38 @@ pipeline {
                 try {
                     emailext(
                         to: "${env.EMAIL_TO}",
-                        subject: "${env.JOB_NAME} build succeeded (${env.DEPLOY_ENV})",
-                        body: "Build succeeded for ${env.JOB_NAME} on ${env.GIT_BRANCH}.\nCommit author: ${env.GIT_COMMIT?:'unknown'}"
+                        subject: "${env.JOB_NAME} succeeded (${env.DEPLOY_ENV})",
+                        body: """API deployment succeeded.
+
+Job: ${env.JOB_NAME}
+Environment: ${env.DEPLOY_ENV}
+Branch: ${env.GIT_BRANCH}
+Commit: ${env.COMMIT_SHA ?: 'unknown'}
+Author: ${env.COMMIT_AUTHOR ?: 'unknown'}
+Build: ${env.BUILD_URL}
+"""
                     )
                 } catch (Exception err) {
                     echo "Email notification skipped: ${err.getMessage()}"
                 }
             }
         }
+
         failure {
             script {
                 try {
                     emailext(
                         to: "${env.EMAIL_TO}",
-                        subject: "${env.JOB_NAME} build failed (${env.DEPLOY_ENV})",
-                        body: "Build failed for ${env.JOB_NAME} on ${env.GIT_BRANCH}.\nCheck Jenkins logs for details."
+                        subject: "${env.JOB_NAME} failed",
+                        body: """API deployment failed.
+
+Job: ${env.JOB_NAME}
+Environment: ${env.DEPLOY_ENV ?: 'undetermined'}
+Branch: ${env.GIT_BRANCH ?: 'undetermined'}
+Build: ${env.BUILD_URL}
+
+Check Jenkins Console Output for the error.
+"""
                     )
                 } catch (Exception err) {
                     echo "Email notification skipped: ${err.getMessage()}"
