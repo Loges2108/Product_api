@@ -13,7 +13,7 @@ pipeline {
 
     environment {
         API_REPO = 'https://github.com/Loges2108/Product_api.git'
-        EMAIL_TO = 'aws.saquib@gmail.com'
+        EMAIL_TO = 'logeswaran2108@gmail.com'
     }
 
     stages {
@@ -54,13 +54,13 @@ pipeline {
         }
 
         stage('Checkout') {
-            steps {
-                git branch: "${env.GIT_BRANCH}",
-                    url: "${env.API_REPO}",
-                    poll: true,
-                    changelog: true
-            }
+    steps {
+        checkout scm
+        script {
+            env.GIT_BRANCH = env.DEPLOY_ENV
         }
+    }
+}
 
         stage('Identify Commit') {
             steps {
