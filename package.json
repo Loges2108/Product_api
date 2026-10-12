@@ -4,11 +4,10 @@
   "description": "Product CRUD API using Node.js, Express, Sequelize, AWS RDS SQL Server and S3",
   "main": "src/server.js",
   "scripts": {
-    "start": "npm run start:dev",
-
-    "start:dev": "node scripts/start-environment.js",
-    "start:sit": "node scripts/start-environment.js",
-    "start:uat": "node scripts/start-environment.js",
+    "start": "node scripts/start-environment.js",
+    "start:dev": "node scripts/start-environment.js DEV",
+    "start:sit": "node scripts/start-environment.js SIT",
+    "start:uat": "node scripts/start-environment.js UAT",
 
     "db:create:dev": "node scripts/create-database.js",
     "db:create:sit": "node scripts/create-database.js",

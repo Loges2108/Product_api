@@ -1,126 +1,175 @@
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-usage() {
-  echo "Usage: $0 <DEV|SIT|UAT> <workspace>" >&2
-}
-
 if [[ $# -ne 2 ]]; then
-  usage
+  echo "Usage: $0 <DEV|SIT|UAT> <workspace>" >&2
   exit 1
 fi
 
 ENV_NAME="${1^^}"
-WORKSPACE="${2}"
-
-case "${ENV_NAME}" in
-  DEV|SIT|UAT)
-    ;;
-  *)
-    echo "Unsupported environment: ${ENV_NAME}" >&2
-    exit 1
-    ;;
- esac
-
-if [[ -z "${WORKSPACE}" || ! -d "${WORKSPACE}" ]]; then
-  echo "Workspace directory not found: ${WORKSPACE}" >&2
-  exit 1
-fi
-
+WORKSPACE="$(realpath "$2")"
 APP_ROOT="/var/www/product-api"
-APP_DIR="${APP_ROOT}/${ENV_NAME,,}"
-ENV_FILE="${APP_ROOT}/.env.${ENV_NAME,,}"
-DB_NAME="CrudDB_${ENV_NAME}"
-PM2_NAME="product-api-${ENV_NAME,,}"
-PORT="${PORT_MAP:-}"
+NODE_BIN="/home/ec2-user/.nvm/versions/node/v22.13.0/bin"
+RUN_AS_EC2="/usr/sbin/runuser"
 
-case "${ENV_NAME}" in
+case "$ENV_NAME" in
   DEV) PORT=5001 ;;
   SIT) PORT=5002 ;;
   UAT) PORT=5003 ;;
- esac
+  *)
+    echo "Unsupported environment: $ENV_NAME" >&2
+    exit 1
+    ;;
+esac
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "Environment file is missing: ${ENV_FILE}" >&2
+ENV_LOWER="${ENV_NAME,,}"
+APP_DIR="$APP_ROOT/$ENV_LOWER"
+ENV_FILE="$APP_ROOT/.env.$ENV_LOWER"
+PM2_NAME="product-api-$ENV_LOWER"
+
+if [[ ! -d "$WORKSPACE" || ! -f "$WORKSPACE/package.json" ]]; then
+  echo "Invalid Jenkins workspace: $WORKSPACE" >&2
   exit 1
 fi
 
-if [[ ! -f "${WORKSPACE}/package.json" ]]; then
-  echo "package.json not found in workspace: ${WORKSPACE}" >&2
-  exit 1
-fi
-
-if [[ ! -d "${APP_DIR}" ]]; then
-  mkdir -p "${APP_DIR}"
-fi
-
-if ! id -u "ec2-user" >/dev/null 2>&1; then
-  CHOWN_USER="$(id -un)"
-  CHOWN_GROUP="$(id -gn)"
-else
-  CHOWN_USER="ec2-user"
-  CHOWN_GROUP="ec2-user"
-fi
-
-if [[ "$(id -u)" -eq 0 ]]; then
-  chown -R "${CHOWN_USER}:${CHOWN_GROUP}" "${APP_DIR}"
-fi
-
-cd "${WORKSPACE}"
-
-echo "==> Installing backend dependencies"
-npm ci --no-audit --no-fund
-
-echo "==> Loading environment: ${ENV_FILE}"
-export ENV_FILE="${ENV_FILE}"
-export APP_ENV="${ENV_NAME}"
-export NODE_ENV="production"
-export PORT="${PORT}"
-
-if [[ ! -f "scripts/create-database.js" ]]; then
-  echo "scripts/create-database.js not found in workspace" >&2
-  exit 1
-fi
-
-if [[ ! -f ".sequelizerc" ]]; then
-  echo ".sequelizerc not found in workspace" >&2
-  exit 1
-fi
-
-echo "==> Creating database if missing: ${DB_NAME}"
-node scripts/create-database.js
-
-echo "==> Applying pending Sequelize migrations"
-if ! npx sequelize-cli db:migrate; then
-  echo "Sequelize migrations failed for ${ENV_NAME}" >&2
-  exit 1
-fi
-
-echo "==> Restarting PM2 process ${PM2_NAME}"
-if command -v pm2 >/dev/null 2>&1; then
-  if pm2 show "${PM2_NAME}" >/dev/null 2>&1; then
-    pm2 restart "${PM2_NAME}" --update-env
-  else
-    pm2 start ecosystem.config.js --only "${PM2_NAME}" --update-env
-  fi
-else
-  echo "pm2 is not installed or not on PATH" >&2
-  exit 1
-fi
-
-for attempt in $(seq 1 20); do
-  if curl --fail --silent --show-error "http://127.0.0.1:${PORT}/health" >/tmp/product-api-health.$$ 2>/dev/null; then
-    break
-  fi
-  if [[ "${attempt}" -eq 20 ]]; then
-    echo "Health check failed for ${PM2_NAME} on ${PORT}" >&2
+for file in \
+  package-lock.json \
+  scripts/create-database.js \
+  .sequelizerc \
+  ecosystem.config.js \
+  src/server.js
+do
+  if [[ ! -f "$WORKSPACE/$file" ]]; then
+    echo "Required source file missing: $WORKSPACE/$file" >&2
     exit 1
   fi
+done
+
+if [[ ! -f "$ENV_FILE" || ! -r "$ENV_FILE" ]]; then
+  echo "Environment file missing or unreadable: $ENV_FILE" >&2
+  exit 1
+fi
+
+if [[ ! -x "$RUN_AS_EC2" ||
+      ! -x "$NODE_BIN/node" ||
+      ! -x "$NODE_BIN/npm" ]]; then
+  echo "runuser or Node.js installation is missing." >&2
+  exit 1
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run this deployment helper through sudo." >&2
+  exit 1
+fi
+
+id ec2-user >/dev/null 2>&1 || {
+  echo "ec2-user account does not exist." >&2
+  exit 1
+}
+
+echo "==> Deploying $ENV_NAME API"
+echo "==> Source: $WORKSPACE"
+echo "==> Target: $APP_DIR"
+echo "==> Database: CrudDB_$ENV_NAME"
+echo "==> Port: $PORT"
+
+install -d -o ec2-user -g ec2-user "$APP_DIR"
+
+# Copy the selected Git branch. Preserve secrets and installed modules.
+rsync -a --delete \
+  --exclude='.git/' \
+  --exclude='node_modules/' \
+  --exclude='.env' \
+  --exclude='.env.*' \
+  "$WORKSPACE/" "$APP_DIR/"
+
+chown -R ec2-user:ec2-user "$APP_DIR"
+
+# Ensure the destination contains the expected application files.
+test -f "$APP_DIR/package.json"
+test -f "$APP_DIR/package-lock.json"
+test -f "$APP_DIR/ecosystem.config.js"
+
+# Install dependencies in the deployed application directory.
+echo "==> Installing dependencies"
+"$RUN_AS_EC2" -u ec2-user -- env \
+  HOME=/home/ec2-user \
+  PATH="$NODE_BIN:/usr/local/bin:/usr/bin:/bin" \
+  bash -c 'cd "$1" && npm ci --no-audit --no-fund' \
+  _ "$APP_DIR"
+
+# Run database creation and migrations against the chosen environment.
+# ENV_FILE is absolute and points outside the deployed source directory.
+echo "==> Checking database"
+"$RUN_AS_EC2" -u ec2-user -- env \
+  HOME=/home/ec2-user \
+  PATH="$NODE_BIN:/usr/local/bin:/usr/bin:/bin" \
+  ENV_FILE="$ENV_FILE" \
+  APP_ENV="$ENV_NAME" \
+  NODE_ENV=production \
+  PORT="$PORT" \
+  bash -c 'cd "$1" && node scripts/create-database.js' \
+  _ "$APP_DIR"
+
+echo "==> Applying pending migrations"
+"$RUN_AS_EC2" -u ec2-user -- env \
+  HOME=/home/ec2-user \
+  PATH="$NODE_BIN:/usr/local/bin:/usr/bin:/bin" \
+  ENV_FILE="$ENV_FILE" \
+  APP_ENV="$ENV_NAME" \
+  NODE_ENV=production \
+  PORT="$PORT" \
+  bash -c 'cd "$1" && npx sequelize-cli db:migrate' \
+  _ "$APP_DIR"
+
+# Restart only after migrations succeed.
+echo "==> Restarting $PM2_NAME"
+"$RUN_AS_EC2" -u ec2-user -- env \
+  HOME=/home/ec2-user \
+  PATH="$NODE_BIN:/usr/local/bin:/usr/bin:/bin" \
+  ENV_FILE="$ENV_FILE" \
+  APP_ENV="$ENV_NAME" \
+  NODE_ENV=production \
+  PORT="$PORT" \
+  bash -c '
+    cd "$1"
+    if ! command -v pm2 >/dev/null 2>&1; then
+      echo "PM2 is not available to ec2-user" >&2
+      exit 1
+    fi
+    if pm2 show "$2" >/dev/null 2>&1; then
+      pm2 restart "$2" --update-env
+    else
+      pm2 start ecosystem.config.js --only "$2" --update-env
+    fi
+    pm2 save
+  ' _ "$APP_DIR" "$PM2_NAME"
+
+# Confirm that the API is responding.
+echo "==> Checking health on port $PORT"
+HEALTH_OK=0
+
+for attempt in $(seq 1 20); do
+  if curl --fail --silent \
+    "http://127.0.0.1:$PORT/health" >/dev/null; then
+    HEALTH_OK=1
+    break
+  fi
+  echo "Health check $attempt/20 failed; retrying..."
   sleep 3
 done
 
-curl --fail --silent --show-error \
-  --retry 10 --retry-delay 3 \
-  "http://127.0.0.1:${PORT}/api/products" >/dev/null
+if [[ "$HEALTH_OK" -ne 1 ]]; then
+  echo "API health check failed for $ENV_NAME." >&2
+  "$RUN_AS_EC2" -u ec2-user -- env \
+    HOME=/home/ec2-user \
+    PATH="$NODE_BIN:/usr/local/bin:/usr/bin:/bin" \
+    pm2 logs "$PM2_NAME" --lines 80 --nostream || true
+  exit 1
+fi
 
-echo "==> Backend deployment complete for ${ENV_NAME}"
+curl --fail --silent --show-error \
+  "http://127.0.0.1:$PORT/api/products" >/dev/null
+
+echo "==> Deployment successful for $ENV_NAME"

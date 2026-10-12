@@ -2,13 +2,20 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const envFile = process.env.ENV_FILE;
+const supportedEnvironments = ["DEV", "SIT", "UAT"];
+const appEnvironment = (
+  process.argv[2] || process.env.APP_ENV || "DEV"
+).toUpperCase();
 
-if (!envFile) {
-  console.error("ENV_FILE is required.");
+if (!supportedEnvironments.includes(appEnvironment)) {
+  console.error(
+    `Unsupported environment: ${appEnvironment}. Use DEV, SIT, or UAT.`
+  );
   process.exit(1);
 }
 
+const envFile =
+  process.env.ENV_FILE || `.env.${appEnvironment.toLowerCase()}`;
 const resolvedEnvFile = path.resolve(envFile);
 
 if (!fs.existsSync(resolvedEnvFile)) {
@@ -16,11 +23,14 @@ if (!fs.existsSync(resolvedEnvFile)) {
   process.exit(1);
 }
 
-function runCommand(command, args) {
+process.env.APP_ENV = appEnvironment;
+process.env.ENV_FILE = resolvedEnvFile;
+
+function runCommand(command, args, shell = false) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: "inherit",
-      shell: false,
+      shell,
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -46,6 +56,7 @@ async function startEnvironment() {
   try {
     console.log("");
     console.log("========================================");
+    console.log(`Environment: ${appEnvironment}`);
     console.log(`Environment file: ${resolvedEnvFile}`);
     console.log("========================================");
     console.log("");
@@ -57,7 +68,12 @@ async function startEnvironment() {
     // 2. Run pending migrations
     console.log("");
     console.log("Checking database migrations...");
-    await runCommand("npx", ["sequelize-cli", "db:migrate"]);
+    const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+    await runCommand(
+      npxCommand,
+      ["sequelize-cli", "db:migrate"],
+      process.platform === "win32"
+    );
 
     // 3. Start API
     console.log("");
