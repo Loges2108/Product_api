@@ -12,54 +12,45 @@ pipeline {
         skipDefaultCheckout(true)
     }
 
-    environment {
-    // Keep only static environment variables here.
-    // Dynamic deployment variables are assigned in script blocks.
-}
-
     stages {
 
-        // --------------------------------------------------
-        // 1. Determine environment from Jenkins job name
-        // --------------------------------------------------
+        // 1. Determine environment from the Jenkins job name
         stage('Determine Environment') {
-    steps {
-        script {
-            def jobName = env.JOB_NAME.toUpperCase()
+            steps {
+                script {
+                    def job = env.JOB_NAME.toUpperCase()
 
-            if (jobName.endsWith('_DEV')) {
-                env.DEPLOY_ENV = 'DEV'
-                env.EXPECTED_BRANCH = 'DEV'
-                env.DEPLOY_PORT = '5001'
-                env.SHOULD_DEPLOY = 'false'
-            } else if (jobName.endsWith('_SIT')) {
-                env.DEPLOY_ENV = 'SIT'
-                env.EXPECTED_BRANCH = 'SIT'
-                env.SOURCE_BRANCH = 'DEV'
-                env.DEPLOY_PORT = '5002'
-                env.SHOULD_DEPLOY = 'false'
-            } else if (jobName.endsWith('_UAT')) {
-                env.DEPLOY_ENV = 'UAT'
-                env.EXPECTED_BRANCH = 'UAT'
-                env.SOURCE_BRANCH = 'SIT'
-                env.DEPLOY_PORT = '5003'
-                env.SHOULD_DEPLOY = 'false'
-            } else {
-                error("Unknown Jenkins job name: ${env.JOB_NAME}")
+                    if (job.endsWith('_DEV')) {
+                        env.DEPLOY_ENV = 'DEV'
+                        env.EXPECTED_BRANCH = 'DEV'
+                        env.DEPLOY_PORT = '5001'
+                        env.SOURCE_BRANCH = ''
+                    } else if (job.endsWith('_SIT')) {
+                        env.DEPLOY_ENV = 'SIT'
+                        env.EXPECTED_BRANCH = 'SIT'
+                        env.DEPLOY_PORT = '5002'
+                        env.SOURCE_BRANCH = 'DEV'
+                    } else if (job.endsWith('_UAT')) {
+                        env.DEPLOY_ENV = 'UAT'
+                        env.EXPECTED_BRANCH = 'UAT'
+                        env.DEPLOY_PORT = '5003'
+                        env.SOURCE_BRANCH = 'SIT'
+                    } else {
+                        error("Unknown Jenkins job name: ${env.JOB_NAME}")
+                    }
+
+                    env.SHOULD_DEPLOY = 'false'
+
+                    echo "Jenkins Job      : ${env.JOB_NAME}"
+                    echo "Deployment Env   : ${env.DEPLOY_ENV}"
+                    echo "Expected Branch  : ${env.EXPECTED_BRANCH}"
+                    echo "Deployment Port  : ${env.DEPLOY_PORT}"
+                    echo "Promotion Source : ${env.SOURCE_BRANCH ?: 'N/A'}"
+                }
             }
-
-            echo "Jenkins Job     : ${env.JOB_NAME}"
-            echo "Deployment Env  : ${env.DEPLOY_ENV}"
-            echo "Expected Branch : ${env.EXPECTED_BRANCH}"
-            echo "Deployment Port : ${env.DEPLOY_PORT}"
-            echo "Promotion Source: ${env.SOURCE_BRANCH ?: 'N/A'}"
         }
-    }
-}
 
-        // --------------------------------------------------
-        // 2. Checkout ONLY the branch configured for this job
-        // --------------------------------------------------
+        // 2. Checkout the branch configured in the Jenkins job
         stage('Checkout') {
             steps {
                 deleteDir()
@@ -73,13 +64,6 @@ pipeline {
 
                     echo "Checked-out commit: ${env.COMMIT_SHA}"
 
-                    /*
-                     * Verify that the checked-out commit is the current
-                     * tip of the branch configured for this environment.
-                     *
-                     * This prevents the UAT job from deploying a DEV
-                     * checkout accidentally.
-                     */
                     sh '''
                         set -eu
 
@@ -89,11 +73,11 @@ pipeline {
                         ACTUAL_COMMIT="$(git rev-parse HEAD)"
                         BRANCH_COMMIT="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}")"
 
-                        echo "HEAD commit:   ${ACTUAL_COMMIT}"
-                        echo "Branch commit: ${BRANCH_COMMIT}"
+                        echo "HEAD commit:   $ACTUAL_COMMIT"
+                        echo "Branch commit: $BRANCH_COMMIT"
 
                         if [ "$ACTUAL_COMMIT" != "$BRANCH_COMMIT" ]; then
-                            echo "ERROR: Checked-out commit does not match the configured environment branch."
+                            echo "ERROR: Checkout does not match the expected branch."
                             exit 1
                         fi
                     '''
@@ -101,9 +85,7 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------
-        // 3. Validate source files
-        // --------------------------------------------------
+        // 3. Validate required API files
         stage('Validate Source') {
             steps {
                 sh '''
@@ -120,12 +102,9 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------
-        // 4. Validate promotion rules
-        // DEV: any commit on DEV
-        // SIT: merge from DEV
-        // UAT: merge from SIT
-        // --------------------------------------------------
+        // 4. DEV deploys directly.
+        // SIT requires a regular merge commit from DEV.
+        // UAT requires a regular merge commit from SIT.
         stage('Validate Promotion') {
             steps {
                 script {
@@ -133,33 +112,29 @@ pipeline {
                         env.SHOULD_DEPLOY = 'true'
                         echo 'DEV deployment is allowed.'
                     } else {
-                        def validationResult = sh(
+                        int result = sh(
                             script: '''
                                 set -eu
 
-                                echo "Checking promotion into ${EXPECTED_BRANCH}"
-                                echo "Required source branch: ${SOURCE_BRANCH}"
+                                echo "Target branch: ${EXPECTED_BRANCH}"
+                                echo "Required source: ${SOURCE_BRANCH}"
 
                                 git fetch origin \
                                   "+refs/heads/${SOURCE_BRANCH}:refs/remotes/origin/${SOURCE_BRANCH}"
 
-                                # A valid promotion must be a two-parent
-                                # merge commit.
                                 PARENT_LINE="$(git rev-list --parents -n 1 HEAD)"
                                 PARENT_COUNT="$(echo "$PARENT_LINE" | awk '{print NF - 1}')"
 
-                                echo "Merge parent count: ${PARENT_COUNT}"
+                                echo "Merge parent count: $PARENT_COUNT"
 
                                 if [ "$PARENT_COUNT" -lt 2 ]; then
-                                    echo "SKIP: Current commit is not a merge commit."
+                                    echo "SKIP: This commit is not a merge commit."
                                     exit 10
                                 fi
 
-                                # For a normal merge commit, HEAD^2 is the
-                                # source-side commit brought into the target.
                                 SOURCE_PARENT="$(git rev-parse HEAD^2)"
 
-                                echo "Merged source commit: ${SOURCE_PARENT}"
+                                echo "Merged source commit: $SOURCE_PARENT"
 
                                 if git merge-base --is-ancestor \
                                     "$SOURCE_PARENT" \
@@ -167,22 +142,19 @@ pipeline {
                                     echo "Promotion validation passed."
                                     exit 0
                                 else
-                                    echo "SKIP: The second merge parent is not in ${SOURCE_BRANCH} history."
+                                    echo "SKIP: Merge source is not in ${SOURCE_BRANCH} history."
                                     exit 10
                                 fi
                             ''',
                             returnStatus: true
                         )
 
-                        if (validationResult == 0) {
+                        if (result == 0) {
                             env.SHOULD_DEPLOY = 'true'
-                        } else if (validationResult == 10) {
+                        } else if (result == 10) {
                             env.SHOULD_DEPLOY = 'false'
                         } else {
-                            error(
-                                "Promotion validation failed due to a Git error. " +
-                                "Deployment is blocked."
-                            )
+                            error('Git promotion validation failed. Deployment blocked.')
                         }
                     }
 
@@ -191,13 +163,11 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------
-        // 5. Deploy to the matching environment only
-        // --------------------------------------------------
+        // 5. Deploy to the environment selected from the job name
         stage('Deploy API') {
             when {
                 expression {
-                    return env.SHOULD_DEPLOY == 'true'
+                    env.SHOULD_DEPLOY == 'true'
                 }
             }
 
@@ -205,8 +175,7 @@ pipeline {
                 sh '''
                     set -eu
 
-                    echo "Deploying ${DEPLOY_ENV}"
-                    echo "Expected branch: ${EXPECTED_BRANCH}"
+                    echo "Deploying environment: ${DEPLOY_ENV}"
                     echo "Commit: ${COMMIT_SHA}"
 
                     sudo -n /usr/local/sbin/deploy-product-api \
@@ -216,13 +185,11 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------
-        // 6. Verify deployed API
-        // --------------------------------------------------
+        // 6. Health check for the matching environment
         stage('Health Check') {
             when {
                 expression {
-                    return env.SHOULD_DEPLOY == 'true'
+                    env.SHOULD_DEPLOY == 'true'
                 }
             }
 
@@ -232,7 +199,7 @@ pipeline {
 
                     HEALTH_URL="http://127.0.0.1:${DEPLOY_PORT}/health"
 
-                    echo "Checking ${HEALTH_URL}"
+                    echo "Checking $HEALTH_URL"
 
                     curl \
                       --fail \
@@ -244,18 +211,16 @@ pipeline {
                       "$HEALTH_URL"
 
                     echo ""
-                    echo "API health check passed."
+                    echo "Health check passed."
                 '''
             }
         }
 
-        // --------------------------------------------------
-        // 7. Explain why deployment was skipped
-        // --------------------------------------------------
+        // 7. Report skipped promotions without deploying
         stage('Deployment Skipped') {
             when {
                 expression {
-                    return env.SHOULD_DEPLOY != 'true'
+                    env.SHOULD_DEPLOY != 'true'
                 }
             }
 
@@ -267,7 +232,7 @@ pipeline {
                 Branch      : ${env.EXPECTED_BRANCH}
                 Commit      : ${env.COMMIT_SHA}
 
-                The required promotion merge was not detected.
+                Required promotion merge was not detected.
                 No deployment command was executed.
                 """
             }
@@ -280,12 +245,12 @@ pipeline {
         }
 
         failure {
-            echo "Pipeline failed for ${env.DEPLOY_ENV}. Review the console output."
+            echo "Pipeline failed for ${env.DEPLOY_ENV ?: 'unknown environment'}."
         }
 
         always {
             echo "Job: ${env.JOB_NAME}"
-            echo "Build: #${env.BUILD_NUMBER}"
+            echo "Build: ${env.BUILD_NUMBER}"
         }
     }
 }
