@@ -13,13 +13,9 @@ pipeline {
     }
 
     environment {
-        SHOULD_DEPLOY = 'false'
-        DEPLOY_ENV = ''
-        EXPECTED_BRANCH = ''
-        SOURCE_BRANCH = ''
-        DEPLOY_PORT = ''
-        COMMIT_SHA = ''
-    }
+    // Keep only static environment variables here.
+    // Dynamic deployment variables are assigned in script blocks.
+}
 
     stages {
 
@@ -27,39 +23,39 @@ pipeline {
         // 1. Determine environment from Jenkins job name
         // --------------------------------------------------
         stage('Determine Environment') {
-            steps {
-                script {
-                    def jobName = env.JOB_NAME.toUpperCase()
+    steps {
+        script {
+            def jobName = env.JOB_NAME.toUpperCase()
 
-                    if (jobName.endsWith('_DEV')) {
-                        env.DEPLOY_ENV = 'DEV'
-                        env.EXPECTED_BRANCH = 'DEV'
-                        env.DEPLOY_PORT = '5001'
-                    } else if (jobName.endsWith('_SIT')) {
-                        env.DEPLOY_ENV = 'SIT'
-                        env.EXPECTED_BRANCH = 'SIT'
-                        env.SOURCE_BRANCH = 'DEV'
-                        env.DEPLOY_PORT = '5002'
-                    } else if (jobName.endsWith('_UAT')) {
-                        env.DEPLOY_ENV = 'UAT'
-                        env.EXPECTED_BRANCH = 'UAT'
-                        env.SOURCE_BRANCH = 'SIT'
-                        env.DEPLOY_PORT = '5003'
-                    } else {
-                        error(
-                            "Unknown job name: ${env.JOB_NAME}. " +
-                            "Expected suffix _DEV, _SIT, or _UAT."
-                        )
-                    }
-
-                    echo "Jenkins Job      : ${env.JOB_NAME}"
-                    echo "Deployment Env   : ${env.DEPLOY_ENV}"
-                    echo "Expected Branch  : ${env.EXPECTED_BRANCH}"
-                    echo "Deployment Port  : ${env.DEPLOY_PORT}"
-                    echo "Promotion Source : ${env.SOURCE_BRANCH ?: 'N/A'}"
-                }
+            if (jobName.endsWith('_DEV')) {
+                env.DEPLOY_ENV = 'DEV'
+                env.EXPECTED_BRANCH = 'DEV'
+                env.DEPLOY_PORT = '5001'
+                env.SHOULD_DEPLOY = 'false'
+            } else if (jobName.endsWith('_SIT')) {
+                env.DEPLOY_ENV = 'SIT'
+                env.EXPECTED_BRANCH = 'SIT'
+                env.SOURCE_BRANCH = 'DEV'
+                env.DEPLOY_PORT = '5002'
+                env.SHOULD_DEPLOY = 'false'
+            } else if (jobName.endsWith('_UAT')) {
+                env.DEPLOY_ENV = 'UAT'
+                env.EXPECTED_BRANCH = 'UAT'
+                env.SOURCE_BRANCH = 'SIT'
+                env.DEPLOY_PORT = '5003'
+                env.SHOULD_DEPLOY = 'false'
+            } else {
+                error("Unknown Jenkins job name: ${env.JOB_NAME}")
             }
+
+            echo "Jenkins Job     : ${env.JOB_NAME}"
+            echo "Deployment Env  : ${env.DEPLOY_ENV}"
+            echo "Expected Branch : ${env.EXPECTED_BRANCH}"
+            echo "Deployment Port : ${env.DEPLOY_PORT}"
+            echo "Promotion Source: ${env.SOURCE_BRANCH ?: 'N/A'}"
         }
+    }
+}
 
         // --------------------------------------------------
         // 2. Checkout ONLY the branch configured for this job
