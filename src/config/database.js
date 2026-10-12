@@ -20,7 +20,9 @@ const sequelize = new Sequelize(
         encrypt: env.DB_ENCRYPT,
 
         trustServerCertificate:
-          env.DB_TRUST_SERVER_CERTIFICATE
+          env.DB_TRUST_SERVER_CERTIFICATE,
+
+        requestTimeout: 60000
       }
     },
 

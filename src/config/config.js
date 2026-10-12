@@ -15,7 +15,9 @@ module.exports = {
         encrypt: env.DB_ENCRYPT,
 
         trustServerCertificate:
-          env.DB_TRUST_SERVER_CERTIFICATE
+          env.DB_TRUST_SERVER_CERTIFICATE,
+
+        requestTimeout: 60000
       }
     },
 
@@ -36,7 +38,9 @@ module.exports = {
         encrypt: env.DB_ENCRYPT,
 
         trustServerCertificate:
-          env.DB_TRUST_SERVER_CERTIFICATE
+          env.DB_TRUST_SERVER_CERTIFICATE,
+
+        requestTimeout: 60000
       }
     },
 
@@ -57,7 +61,9 @@ module.exports = {
         encrypt: env.DB_ENCRYPT,
 
         trustServerCertificate:
-          env.DB_TRUST_SERVER_CERTIFICATE
+          env.DB_TRUST_SERVER_CERTIFICATE,
+
+        requestTimeout: 60000
       }
     },
 
