@@ -1,10 +1,18 @@
+
+"use strict";
+
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+
 const supportedEnvironments = ["DEV", "SIT", "UAT"];
+
 const appEnvironment = (
-  process.argv[2] || process.env.APP_ENV || "DEV"
+  process.argv[2] ||
+  process.env.APP_ENV ||
+  "DEV"
 ).toUpperCase();
 
 if (!supportedEnvironments.includes(appEnvironment)) {
@@ -14,8 +22,9 @@ if (!supportedEnvironments.includes(appEnvironment)) {
   process.exit(1);
 }
 
-const envFile =
-  process.env.ENV_FILE || `.env.${appEnvironment.toLowerCase()}`;
+const envFile = process.env.ENV_FILE ||
+  path.join(PROJECT_ROOT, `.env.${appEnvironment.toLowerCase()}`);
+
 const resolvedEnvFile = path.resolve(envFile);
 
 if (!fs.existsSync(resolvedEnvFile)) {
@@ -26,16 +35,19 @@ if (!fs.existsSync(resolvedEnvFile)) {
 process.env.APP_ENV = appEnvironment;
 process.env.ENV_FILE = resolvedEnvFile;
 
-function runCommand(command, args, shell = false) {
+function runCommand(command, args) {
   return new Promise((resolve, reject) => {
+    console.log(`\n> ${command} ${args.join(" ")}`);
+
     const child = spawn(command, args, {
+      cwd: PROJECT_ROOT,
       stdio: "inherit",
-      shell,
-      cwd: process.cwd(),
       env: {
         ...process.env,
-        ENV_FILE: resolvedEnvFile,
+        APP_ENV: appEnvironment,
+        ENV_FILE: resolvedEnvFile
       },
+      shell: false
     });
 
     child.on("error", reject);
@@ -45,7 +57,9 @@ function runCommand(command, args, shell = false) {
         resolve();
       } else {
         reject(
-          new Error(`${command} failed with exit code ${code}`)
+          new Error(
+            `${command} exited with code ${code}`
+          )
         );
       }
     });
@@ -53,37 +67,36 @@ function runCommand(command, args, shell = false) {
 }
 
 async function startEnvironment() {
+  const node = process.execPath;
+  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+
   try {
     console.log("");
     console.log("========================================");
     console.log(`Environment: ${appEnvironment}`);
     console.log(`Environment file: ${resolvedEnvFile}`);
     console.log("========================================");
-    console.log("");
 
-    // 1. Create database if missing
-    console.log("Checking database...");
-    await runCommand("node", ["scripts/create-database.js"]);
+    // 1. Create the database only if it does not exist.
+    console.log("\nChecking database...");
+    await runCommand(node, [
+      path.join(PROJECT_ROOT, "scripts", "create-database.js")
+    ]);
 
-    // 2. Run pending migrations
-    console.log("");
-    console.log("Checking database migrations...");
-    const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
-    await runCommand(
-      npxCommand,
-      ["sequelize-cli", "db:migrate"],
-      process.platform === "win32"
-    );
+    // 2. Apply pending migrations.
+    console.log("\nChecking database migrations...");
+    await runCommand(npx, [
+      "sequelize-cli",
+      "db:migrate"
+    ]);
 
-    // 3. Start API
-    console.log("");
-    console.log("Starting API...");
-    console.log("");
-
-    await runCommand("node", ["src/server.js"]);
+    // 3. Start the API only if both previous steps succeeded.
+    console.log("\nStarting API...");
+    await runCommand(node, [
+      path.join(PROJECT_ROOT, "src", "server.js")
+    ]);
   } catch (error) {
-    console.error("");
-    console.error("Environment startup failed:");
+    console.error("\nEnvironment startup failed:");
     console.error(error.message);
     process.exitCode = 1;
   }
