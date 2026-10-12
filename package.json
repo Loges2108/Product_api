@@ -6,21 +6,21 @@
   "scripts": {
     "start": "npm run start:dev",
 
-    "start:dev": "cross-env ENV_FILE=.env.dev node scripts/start-environment.js",
-    "start:sit": "cross-env ENV_FILE=.env.sit node scripts/start-environment.js",
-    "start:uat": "cross-env ENV_FILE=.env.uat node scripts/start-environment.js",
+    "start:dev": "node scripts/start-environment.js",
+    "start:sit": "node scripts/start-environment.js",
+    "start:uat": "node scripts/start-environment.js",
 
-    "db:create:dev": "cross-env ENV_FILE=.env.dev node scripts/create-database.js",
-    "db:create:sit": "cross-env ENV_FILE=.env.sit node scripts/create-database.js",
-    "db:create:uat": "cross-env ENV_FILE=.env.uat node scripts/create-database.js",
+    "db:create:dev": "node scripts/create-database.js",
+    "db:create:sit": "node scripts/create-database.js",
+    "db:create:uat": "node scripts/create-database.js",
 
-    "db:migrate:dev": "cross-env ENV_FILE=.env.dev npx sequelize-cli db:migrate",
-    "db:migrate:sit": "cross-env ENV_FILE=.env.sit npx sequelize-cli db:migrate",
-    "db:migrate:uat": "cross-env ENV_FILE=.env.uat npx sequelize-cli db:migrate",
+    "db:migrate:dev": "npx sequelize-cli db:migrate",
+    "db:migrate:sit": "npx sequelize-cli db:migrate",
+    "db:migrate:uat": "npx sequelize-cli db:migrate",
 
-    "db:undo:dev": "cross-env ENV_FILE=.env.dev npx sequelize-cli db:migrate:undo",
-    "db:undo:sit": "cross-env ENV_FILE=.env.sit npx sequelize-cli db:migrate:undo",
-    "db:undo:uat": "cross-env ENV_FILE=.env.uat npx sequelize-cli db:migrate:undo",
+    "db:undo:dev": "npx sequelize-cli db:migrate:undo",
+    "db:undo:sit": "npx sequelize-cli db:migrate:undo",
+    "db:undo:uat": "npx sequelize-cli db:migrate:undo",
 
     "dev": "nodemon src/server.js"
   },

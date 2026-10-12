@@ -1,142 +1,75 @@
-const {
-  spawn
-} = require("child_process");
+const { spawn } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 
 const envFile = process.env.ENV_FILE;
 
 if (!envFile) {
-  console.error(
-    "ENV_FILE is required."
-  );
-
+  console.error("ENV_FILE is required.");
   process.exit(1);
 }
 
-function runCommand(
-  command,
-  args
-) {
-  return new Promise(
-    (resolve, reject) => {
-      const child = spawn(
-        command,
-        args,
-        {
-          stdio: "inherit",
+const resolvedEnvFile = path.resolve(envFile);
 
-          shell: true,
+if (!fs.existsSync(resolvedEnvFile)) {
+  console.error(`Environment file not found: ${resolvedEnvFile}`);
+  process.exit(1);
+}
 
-          env: {
-            ...process.env,
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      shell: false,
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ENV_FILE: resolvedEnvFile,
+      },
+    });
 
-            ENV_FILE: envFile
-          }
-        }
-      );
+    child.on("error", reject);
 
-      child.on(
-        "close",
-        (code) => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(
-              new Error(
-                `${command} failed with exit code ${code}`
-              )
-            );
-          }
-        }
-      );
-    }
-  );
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(
+          new Error(`${command} failed with exit code ${code}`)
+        );
+      }
+    });
+  });
 }
 
 async function startEnvironment() {
   try {
     console.log("");
-    console.log(
-      "========================================"
-    );
-
-    console.log(
-      `Environment: ${envFile}`
-    );
-
-    console.log(
-      "========================================"
-    );
-
+    console.log("========================================");
+    console.log(`Environment file: ${resolvedEnvFile}`);
+    console.log("========================================");
     console.log("");
 
-    // ------------------------------------------------
-    // 1. Create database if it does not exist
-    // ------------------------------------------------
+    // 1. Create database if missing
+    console.log("Checking database...");
+    await runCommand("node", ["scripts/create-database.js"]);
 
-    console.log(
-      "Checking database..."
-    );
-
-    await runCommand(
-      process.platform === "win32"
-        ? "node"
-        : "node",
-      [
-        "scripts/create-database.js"
-      ]
-    );
-
-    // ------------------------------------------------
     // 2. Run pending migrations
-    // ------------------------------------------------
-
     console.log("");
+    console.log("Checking database migrations...");
+    await runCommand("npx", ["sequelize-cli", "db:migrate"]);
 
-    console.log(
-      "Checking database migrations..."
-    );
-
-    await runCommand(
-      process.platform === "win32"
-        ? "npx"
-        : "npx",
-      [
-        "sequelize-cli",
-        "db:migrate"
-      ]
-    );
-
-    // ------------------------------------------------
     // 3. Start API
-    // ------------------------------------------------
-
+    console.log("");
+    console.log("Starting API...");
     console.log("");
 
-    console.log(
-      "Starting API..."
-    );
-
-    console.log("");
-
-    await runCommand(
-      "node",
-      [
-        "src/server.js"
-      ]
-    );
-
+    await runCommand("node", ["src/server.js"]);
   } catch (error) {
     console.error("");
-
-    console.error(
-      "Environment startup failed:"
-    );
-
-    console.error(
-      error.message
-    );
-
-    process.exit(1);
+    console.error("Environment startup failed:");
+    console.error(error.message);
+    process.exitCode = 1;
   }
 }
 
